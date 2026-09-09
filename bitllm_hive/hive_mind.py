@@ -6,7 +6,7 @@ standard library ``concurrent.futures`` pool.
 
 from __future__ import annotations
 
-from concurrent.futures import ProcessPoolExecutor, ThreadPoolExecutor
+from concurrent.futures import ProcessPoolExecutor
 from typing import Any, Callable, Sequence
 
 from .coding_expert import CodingExpert, LLMBackend, MockLLM

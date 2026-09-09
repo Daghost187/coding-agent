@@ -7,6 +7,7 @@ from pathlib import Path
 from typing import Any
 
 from .code_healer import CodeHealer
+from .metrics import MetricsTracker, PolicyConfig
 from .orchestrator import Orchestrator
 from .self_improve import ExperienceBank
 from .specialists import SpecialistRegistry, build_specialist_from_config
@@ -32,23 +33,31 @@ def build_orchestrator(config: dict[str, Any]) -> Orchestrator:
     Example config::
 
         {
+          "include_defaults": true,
+          "plugins": ["my_pkg.specialists:register"],
           "specialists": {
-            "coder": {"role": "coder", "backend": "openai", "backend_config": {"model": "gpt-4o"}, "temperature": 0.2}
+            "coder": {"role": "coder", "backend": "ollama", "backend_config": {"model": "qwen2.5-coder:7b"}, "temperature": 0.2}
           },
           "healer": {"max_attempts": 5},
-          "experience_bank": {"path": "experience.jsonl"}
+          "experience_bank": {"path": "experience.jsonl"},
+          "metrics": {"path": "metrics.jsonl"},
+          "policy": {"min_runs": 3, "hot_ewma": 0.85, "cold_ewma": 0.35, "max_team": 4},
+          "parallel": true
         }
     """
-    registry = SpecialistRegistry()
+    registry = SpecialistRegistry.default() if config.get("include_defaults", True) else SpecialistRegistry()
     for name, cfg in config.get("specialists", {}).items():
         registry.register(name, build_specialist_from_config(name, cfg))
+    for plugin in config.get("plugins", []):
+        registry.load_plugin(plugin)
 
-    healer_cfg = config.get("healer", {})
-    bank_cfg = config.get("experience_bank", {"path": "bitllm_experience.jsonl"})
     return Orchestrator(
         registry=registry,
-        healer=CodeHealer(**healer_cfg),
-        bank=ExperienceBank(**bank_cfg),
+        healer=CodeHealer(**config.get("healer", {})),
+        bank=ExperienceBank(**config.get("experience_bank", {"path": "bitllm_experience.jsonl"})),
+        tracker=MetricsTracker(**config.get("metrics", {"path": "bitllm_metrics.jsonl"})),
+        policy_config=PolicyConfig(**config.get("policy", {})),
+        parallel=config.get("parallel", True),
     )
 
 

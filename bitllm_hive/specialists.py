@@ -2,11 +2,12 @@
 
 from __future__ import annotations
 
+import importlib
 from dataclasses import dataclass, field
 from enum import Enum
-from typing import Any
+from typing import Any, Callable
 
-from .backends import BackendRegistry, LLMBackend
+from .backends import BackendRegistry, LLMBackend, resolve_default_backend
 
 
 class Role(str, Enum):
@@ -59,25 +60,41 @@ class Specialist:
 
     role: str
     system_prompt: str
-    backend_name: str = "mock"
+    backend_name: str = "auto"
     backend_config: dict[str, Any] = field(default_factory=dict)
     temperature: float = 0.2
     max_tokens: int = 1024
+    tags: list[str] = field(default_factory=list)
 
     def backend(self) -> LLMBackend:
         return BackendRegistry.create(self.backend_name, self.backend_config)
 
+    def resolved_backend_name(self) -> str:
+        return resolve_default_backend() if self.backend_name == "auto" else self.backend_name
+
     def generate(self, prompt: str, context: str | None = None, **kwargs: Any) -> str:
         backend = self.backend()
-        full = f"{self.system_prompt}\n"
+        full = ""
         if context:
             full += f"Context:\n{context}\n\n"
         full += f"Task:\n{prompt}"
         return backend.generate(
             full,
+            system=self.system_prompt,
             temperature=kwargs.get("temperature", self.temperature),
             max_tokens=kwargs.get("max_tokens", self.max_tokens),
         )
+
+    def as_dict(self) -> dict[str, Any]:
+        return {
+            "role": self.role,
+            "system_prompt": self.system_prompt,
+            "backend": self.backend_name,
+            "backend_config": dict(self.backend_config),
+            "temperature": self.temperature,
+            "max_tokens": self.max_tokens,
+            "tags": list(self.tags),
+        }
 
 
 class SpecialistRegistry:
@@ -94,11 +111,34 @@ class SpecialistRegistry:
             raise KeyError(f"Unknown specialist '{name}'. Available: {list(self._specialists)}")
         return self._specialists[name]
 
+    def unregister(self, name: str) -> None:
+        self._specialists.pop(name, None)
+
     def names(self) -> list[str]:
         return list(self._specialists)
 
     def all(self) -> dict[str, Specialist]:
         return dict(self._specialists)
+
+    def set_backend(self, backend_name: str, backend_config: dict[str, Any] | None = None, only: list[str] | None = None) -> None:
+        """Point some or all specialists at a backend."""
+        for name, spec in self._specialists.items():
+            if only and name not in only:
+                continue
+            spec.backend_name = backend_name
+            if backend_config is not None:
+                spec.backend_config = dict(backend_config)
+
+    def load_plugin(self, spec: str) -> None:
+        """Import ``module`` or ``module:callable`` and let it register specialists/backends.
+
+        The callable receives ``(registry, BackendRegistry)``.  If only a module is
+        given, a top-level ``register(registry, backends)`` function is expected.
+        """
+        module_name, _, attr = spec.partition(":")
+        module = importlib.import_module(module_name)
+        hook: Callable[..., Any] = getattr(module, attr or "register")
+        hook(self, BackendRegistry)
 
     @classmethod
     def default(cls) -> "SpecialistRegistry":
@@ -113,11 +153,13 @@ class SpecialistRegistry:
 
 def build_specialist_from_config(name: str, config: dict[str, Any]) -> Specialist:
     """Build a ``Specialist`` from a plain dict."""
+    role = config.get("role", name)
     return Specialist(
-        role=config.get("role", name),
-        system_prompt=config.get("system_prompt", "You are a helpful coding assistant."),
-        backend_name=config.get("backend", "mock"),
+        role=role,
+        system_prompt=config.get("system_prompt", DEFAULT_PROMPTS.get(role, "You are a helpful coding assistant.")),
+        backend_name=config.get("backend", "auto"),
         backend_config=config.get("backend_config", {}),
         temperature=config.get("temperature", 0.2),
         max_tokens=config.get("max_tokens", 1024),
+        tags=list(config.get("tags", [])),
     )

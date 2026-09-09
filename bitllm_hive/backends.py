@@ -94,21 +94,27 @@ class MockBackend(LLMBackend):
 
 
 @dataclass
-class OpenAIBackend(LLMBackend):
-    """OpenAI-compatible HTTP backend (also works with vLLM, TGI, LiteLLM, etc.)."""
+class OpenAICompatBackend(LLMBackend):
+    """Any OpenAI-compatible ``/v1/chat/completions`` server.
 
-    name: ClassVar[str] = "openai"
-    api_key: str | None = None
-    base_url: str = "https://api.openai.com/v1"
-    model: str = "gpt-4o-mini"
+    Defaults target a self-hosted endpoint (vLLM, llama.cpp server, TGI,
+    LocalAI, LiteLLM, Ollama's ``/v1``...).  No API key is required unless the
+    server enforces one.
+    """
+
+    name: ClassVar[str] = "openai_compat"
+    base_url: str = field(default_factory=lambda: os.getenv("BITLLM_OPENAI_BASE_URL", "http://localhost:8000/v1"))
+    model: str = field(default_factory=lambda: os.getenv("BITLLM_MODEL", "local-model"))
+    api_key: str | None = field(default_factory=lambda: os.getenv("BITLLM_API_KEY"))
+    require_key: bool = False
+    timeout: int = 120
 
     def __post_init__(self):
-        self.api_key = self.api_key or os.getenv("OPENAI_API_KEY")
         self.base_url = self.base_url.rstrip("/")
 
     def generate(self, prompt: str, system: str | None = None, temperature: float = 0.2, max_tokens: int = 1024, **kwargs: Any) -> str:
-        if not self.api_key:
-            raise RuntimeError("OpenAIBackend requires an API key; set OPENAI_API_KEY or pass api_key")
+        if self.require_key and not self.api_key:
+            raise RuntimeError(f"{type(self).__name__} requires an API key")
 
         messages = []
         if system:
@@ -123,17 +129,28 @@ class OpenAIBackend(LLMBackend):
         }
         data.update(kwargs.get("extra_body", {}))
 
+        headers = {"Content-Type": "application/json"}
+        if self.api_key:
+            headers["Authorization"] = f"Bearer {self.api_key}"
         req = urllib.request.Request(
             f"{self.base_url}/chat/completions",
             data=json.dumps(data).encode(),
-            headers={
-                "Authorization": f"Bearer {self.api_key}",
-                "Content-Type": "application/json",
-            },
+            headers=headers,
         )
-        with urllib.request.urlopen(req, timeout=120) as resp:
+        with urllib.request.urlopen(req, timeout=self.timeout) as resp:
             payload = json.loads(resp.read().decode())
         return payload["choices"][0]["message"]["content"]
+
+
+@dataclass
+class OpenAIBackend(OpenAICompatBackend):
+    """Hosted OpenAI API.  Opt-in only; requires ``OPENAI_API_KEY``."""
+
+    name: ClassVar[str] = "openai"
+    base_url: str = "https://api.openai.com/v1"
+    model: str = "gpt-4o-mini"
+    api_key: str | None = field(default_factory=lambda: os.getenv("OPENAI_API_KEY"))
+    require_key: bool = True
 
 
 @dataclass
@@ -141,11 +158,25 @@ class OllamaBackend(LLMBackend):
     """Local Ollama backend (``ollama run`` server)."""
 
     name: ClassVar[str] = "ollama"
-    model: str = "llama3.2"
-    base_url: str = "http://localhost:11434"
+    model: str = field(default_factory=lambda: os.getenv("BITLLM_MODEL", "qwen2.5-coder:7b"))
+    base_url: str = field(default_factory=lambda: os.getenv("OLLAMA_HOST", "http://localhost:11434"))
+    timeout: int = 180
 
     def __post_init__(self):
+        if not self.base_url.startswith("http"):
+            self.base_url = f"http://{self.base_url}"
         self.base_url = self.base_url.rstrip("/")
+
+    @classmethod
+    def is_available(cls, base_url: str | None = None, timeout: float = 0.5) -> bool:
+        url = (base_url or os.getenv("OLLAMA_HOST", "http://localhost:11434")).rstrip("/")
+        if not url.startswith("http"):
+            url = f"http://{url}"
+        try:
+            with urllib.request.urlopen(f"{url}/api/tags", timeout=timeout):
+                return True
+        except Exception:
+            return False
 
     def generate(self, prompt: str, system: str | None = None, temperature: float = 0.7, max_tokens: int = 1024, **kwargs: Any) -> str:
         data = {
@@ -160,7 +191,7 @@ class OllamaBackend(LLMBackend):
             data=json.dumps(data).encode(),
             headers={"Content-Type": "application/json"},
         )
-        with urllib.request.urlopen(req, timeout=180) as resp:
+        with urllib.request.urlopen(req, timeout=self.timeout) as resp:
             payload = json.loads(resp.read().decode())
         return payload.get("response", "")
 
@@ -179,7 +210,7 @@ class TransformersBackend(LLMBackend):
         if self._pipeline is not None:
             return self._pipeline
         try:
-            from transformers import AutoModelForCausalLM, AutoTokenizer, pipeline
+            from transformers import pipeline
         except ImportError as exc:
             raise RuntimeError("TransformersBackend requires `pip install transformers torch`") from exc
         self._pipeline = pipeline(
@@ -222,13 +253,39 @@ class BackendRegistry:
     @classmethod
     def reset(cls) -> None:
         cls._registry.clear()
+        _register_defaults()
+
+
+_DEFAULT_CACHE: dict[str, str] = {}
+
+
+def resolve_default_backend(force: bool = False) -> str:
+    """Pick the default backend name.
+
+    Order: ``BITLLM_BACKEND`` env var -> local Ollama if reachable -> ``mock``.
+    Hosted vendors are never chosen automatically.
+    """
+    if not force and "name" in _DEFAULT_CACHE:
+        return _DEFAULT_CACHE["name"]
+    env = os.getenv("BITLLM_BACKEND")
+    if env:
+        name = env
+    elif OllamaBackend.is_available():
+        name = "ollama"
+    else:
+        name = "mock"
+    _DEFAULT_CACHE["name"] = name
+    return name
 
 
 def _register_defaults() -> None:
     BackendRegistry.register("mock", lambda c: MockBackend(**c))
-    BackendRegistry.register("openai", lambda c: OpenAIBackend(**c))
     BackendRegistry.register("ollama", lambda c: OllamaBackend(**c))
+    BackendRegistry.register("openai_compat", lambda c: OpenAICompatBackend(**c))
+    BackendRegistry.register("local", lambda c: OpenAICompatBackend(**c))
     BackendRegistry.register("transformers", lambda c: TransformersBackend(**c))
+    BackendRegistry.register("openai", lambda c: OpenAIBackend(**c))
+    BackendRegistry.register("auto", lambda c: BackendRegistry.create(resolve_default_backend(), c))
 
 
 _register_defaults()
