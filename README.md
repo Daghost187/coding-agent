@@ -1,44 +1,90 @@
 # coding-agent
 
-A modular, dynamic coding agent built around a 1-bit Binary Large Language
-Model (BLLM) and a Ray/Hive-Mind swarm of coding experts.
+A modular, dynamic, self-improving coding agent built around a 1-bit Binary
+Large Language Model (BLLM) and a Ray/Hive-Mind swarm of real LLM-powered
+coding specialists.
 
 ## Architecture
 
 ```
-┌─────────────────────────────────────────────┐
-│  HiveMind (Ray / ProcessPool)               │
-│  ┌─────────┐ ┌─────────┐ ┌─────────┐       │
-│  │ Expert 0│ │ Expert 1│ │ Expert 2│ ...   │
-│  │  BLLM   │ │  BLLM   │ │  BLLM   │       │
-│  └────┬────┘ └────┬────┘ └────┬────┘       │
-│       │           │           │              │
-│       └───────────┼───────────┘              │
-│                   ▼                          │
-│          CodeHealer (repair)                 │
-│                   │                          │
-│                   ▼                          │
-│          FusionEngine (score + merge)        │
-└─────────────────────────────────────────────┘
+Prompt / Task
+      │
+      ▼
+┌──────────────────────────────────────────┐
+│ Orchestrator                           │
+│  SpecialistRegistry                    │
+│   prompt_engineer / architect / coder  │
+│   tester / reviewer / optimizer        │
+└────────────────────┬───────────────────┘
+                     │
+        ┌────────────┼────────────┐
+        ▼            ▼            ▼
+   LLMBackend   CodeHealer  FusionEngine
+   (real model) (repair)    (run tests)
+        │            │            │
+        └────────────┴────────────┘
+                     │
+                     ▼
+            ExperienceBank
+            MetaLearner
 ```
 
 ## Modules
 
-- `bitllm_hive.binary_llm` — 1-bit weight layers and a tiny BLLP scorer.
-- `bitllm_hive.coding_expert` — pluggable coding expert with `MockLLM` and `APILLM` backends.
-- `bitllm_hive.hive_mind` — parallel swarm of experts (`Ray` with `concurrent.futures` fallback).
+- `bitllm_hive.binary_llm` — 1-bit weight layers (`BinaryLinear`, `BinaryMLP`).
+- `bitllm_hive.backends` — pluggable LLM backends (`openai`, `ollama`, `transformers`, `mock`).
+- `bitllm_hive.specialists` — registry of specialist roles (coder, architect, tester, ...).
+- `bitllm_hive.hive_mind` — parallel expert swarm (`Ray` with `concurrent.futures` fallback).
 - `bitllm_hive.code_healer` — first-aid repair for generated code.
 - `bitllm_hive.fusion` — test-based scoring and winner selection.
+- `bitllm_hive.self_improve` — `ExperienceBank` + `MetaLearner`.
+- `bitllm_hive.orchestrator` — end-to-end task runner.
+- `bitllm_hive.config` — load orchestrators from JSON/YAML.
 
 ## Quick start
 
 ```bash
 pip install -r requirements.txt
 python examples/add_demo.py
+python examples/orchestrator_demo.py
+python -m unittest discover -s tests
 ```
 
-The demo shows a 1-bit forward pass, three experts generating an `add`
-function, and the fusion engine picking the highest-scoring candidate.
+## Orchestrator quick start
+
+```python
+from bitllm_hive.orchestrator import Orchestrator
+
+orch = Orchestrator()
+result = orch.solve(
+    task="Write a python function add(a, b) that returns the sum.",
+    tests="assert add(2, 3) == 5",
+)
+print(result.code)
+```
+
+## Real model backends
+
+Configure per-specialist backends:
+
+```python
+from bitllm_hive.specialists import Specialist, SpecialistRegistry
+from bitllm_hive.orchestrator import Orchestrator
+
+registry = SpecialistRegistry.default()
+registry.register(
+    "coder",
+    Specialist(
+        role="coder",
+        system_prompt="Write Python.",
+        backend_name="openai",
+        backend_config={"model": "gpt-4o-mini"},
+    ),
+)
+orch = Orchestrator(registry=registry)
+```
+
+Or load from a JSON config (see `bitllm_hive.config`).
 
 ## Optional Ray backend
 
@@ -51,6 +97,7 @@ pip install ray
 
 ## Notes
 
-- The `MockLLM` backend is for offline demos and tests.
-- Replace `MockLLM` with `APILLM` (or any `LLMBackend` subclass) to use a
-  real model.
+- The `mock` backend is for offline demos and tests.
+- Swap in `openai`, `ollama`, or `transformers` for real model inference.
+- See `DESIGN.md` for extension patterns.
+

@@ -1,1 +1,8 @@
 numpy>=1.24
+
+# Optional backends and scaling (install only the ones you need)
+# ray[default]>=2.9
+# transformers>=4.36
+# torch>=2.1
+# ollama  # optional; the Ollama backend uses stdlib urllib
+# pytest>=7.4  # for tests
