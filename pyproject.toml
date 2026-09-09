@@ -1,0 +1,26 @@
+[build-system]
+requires = ["setuptools>=61.0"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "bitllm-hive"
+version = "0.1.0"
+description = "Modular 1-bit BLLM coding agent hive with real LLM specialists"
+readme = "README.md"
+requires-python = ">=3.10"
+dependencies = [
+    "numpy>=1.24",
+]
+
+[project.scripts]
+bitllm-hive = "bitllm_hive.cli:main"
+
+[project.optional-dependencies]
+real = [
+    "ray[default]>=2.9",
+    "transformers>=4.36",
+    "torch>=2.1",
+]
+test = [
+    "pytest>=7.4",
+]
