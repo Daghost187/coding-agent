@@ -1,0 +1,6 @@
+build/
+cmake-build-*/
+.cache/
+*.o
+*.ldst
+compile_commands.json
